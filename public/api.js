@@ -99,6 +99,22 @@ const API = {
       body: JSON.stringify({ fieldIds })
     }));
   },
+  // 单视野细胞覆盖核对：草稿按当前轮廓/视野/标尺实时计算（只读）
+  async draftFieldCoverage(id, fieldId) {
+    return jsonOrThrow(await fetch(`/api/images/${id}/field-coverage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fieldId })
+    }));
+  },
+  // 单视野细胞覆盖核对：报告只读取发布时冻结数据（只读）
+  async reportFieldCoverage(reportId, fieldId) {
+    return jsonOrThrow(await fetch(`/api/reports/${reportId}/field-coverage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ fieldId })
+    }));
+  },
   // 细胞接触簇分析：报告冻结轮廓与定标 + 本次阈值（只读，不写回报告）
   async reportContacts(reportId, thresholdUm) {
     return jsonOrThrow(await fetch(`/api/reports/${reportId}/contacts`, {

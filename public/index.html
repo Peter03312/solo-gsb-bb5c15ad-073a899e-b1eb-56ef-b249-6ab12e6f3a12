@@ -106,7 +106,23 @@
         </div>
 
         <div class="panel">
-          <h3>⑦ 细胞迁移（从已发布报告）</h3>
+          <h3>⑦ 视野细胞覆盖核对（草稿实时）</h3>
+          <p class="hint">输入<b>视野标识</b>（视野 id 或名称）核对细胞标注的覆盖情况：
+            覆盖面积按细胞净区域与视野净区域的<b>几何交集</b>计算——跨越视野边界的细胞只计内部部分，
+            多个细胞重叠只计一次，细胞/视野孔洞与仅边界接触不贡献面积；<b>不沿用</b>按质心计数的密度规则。
+            草稿按当前轮廓、视野与标尺（含未保存修改）实时计算；未定标时像素面积与覆盖率照常显示，
+            物理面积显示“待定标”。本核对为只读查询，不改动草稿与修订。</p>
+          <div class="toolbar wrap">
+            <input type="text" id="coverage-field-id" class="contact-threshold"
+                   placeholder="视野 id 或视野名称" list="coverage-field-options" />
+            <datalist id="coverage-field-options"></datalist>
+            <button id="coverage-run" class="primary small">核对覆盖</button>
+          </div>
+          <div id="coverage-result"></div>
+        </div>
+
+        <div class="panel">
+          <h3>⑧ 细胞迁移（从已发布报告）</h3>
           <p class="hint">把一份<b>已发布报告</b>的全部细胞按仿射变换迁移到当前草稿：
             选择来源报告后，在来源快照与右侧大图上按<b>相同顺序</b>各标记 3 个<b>不共线</b>对应点，
             预览逐个校验全部通过后才能确认迁移。迁移只把细胞<b>追加</b>到当前草稿
@@ -131,7 +147,7 @@
         </div>
 
         <div class="panel">
-          <h3>⑧ 草稿修订时间线</h3>
+          <h3>⑨ 草稿修订时间线</h3>
           <p class="hint">每次<b>成功</b>的标尺定标、轮廓保存、视野保存与细胞迁移都会留下一条
             <b>完整一致的修订</b>（失败请求不留记录）。点 <b>预览</b> 可只读查看该修订的
             <b>标尺、细胞轮廓与取样视野</b>（画布上叠加显示，不影响未保存绘制）；点 <b>恢复</b>
@@ -143,7 +159,7 @@
         </div>
 
         <div class="panel">
-          <h3>⑨ 发布报告</h3>
+          <h3>⑩ 发布报告</h3>
           <p class="hint">发布会冻结当时的图片、标尺、细胞轮廓、<b>取样视野与密度统计</b>；之后修改草稿不影响已发布报告。</p>
           <button id="publish-btn" class="primary wide">发布当前草稿为报告</button>
         </div>
@@ -261,6 +277,21 @@
             结果只读取<b>发布时冻结数据</b>，不随后续草稿变化。</p>
           <div id="rp-merge-field-list" class="merge-field-list"></div>
           <div id="rp-merge-result" class="merge-result"></div>
+        </div>
+        <div class="panel">
+          <h3>视野细胞覆盖核对（发布时冻结）</h3>
+          <p class="hint">输入<b>视野标识</b>（视野 id 或名称）核对该报告中细胞标注的覆盖情况：
+            覆盖面积按细胞净区域与视野净区域的<b>几何交集</b>计算——跨越视野边界的细胞只计内部部分，
+            多个细胞重叠只计一次，孔洞与仅边界接触不贡献面积；<b>不沿用</b>按质心计数的密度规则。
+            结果只读取<b>发布时冻结数据</b>，后续草稿修改或报告更正不改变本报告结果；
+            查询为只读，不写回报告。视野标识不存在或不属于本报告时会明确报错。</p>
+          <div class="toolbar wrap">
+            <input type="text" id="rp-coverage-field-id" class="contact-threshold"
+                   placeholder="视野 id 或视野名称" list="rp-coverage-field-options" />
+            <datalist id="rp-coverage-field-options"></datalist>
+            <button id="rp-coverage-run" class="primary small">核对覆盖</button>
+          </div>
+          <div id="rp-coverage-result"></div>
         </div>
         <div class="panel">
           <h3>接触簇分析（间距阈值）</h3>

@@ -459,6 +459,34 @@ app.post('/api/images/:id/field-merge', (req, res) => {
   });
 });
 
+// ---------- 单视野细胞覆盖核对（只读；按当前草稿实时计算） ----------
+//
+// 请求体：{ fieldId: string }，视野 id 或名称均可。
+// 覆盖面积 = 细胞净区域与视野净区域的几何交集面积（跨边界细胞只计内部部分、
+// 多细胞重叠只计一次、孔洞与仅边界接触不贡献），不沿用按质心计数的密度规则。
+// 查询不修改草稿、修订与报告；未定标时像素面积与覆盖率照常给出，物理面积为“待定标”。
+app.post('/api/images/:id/field-coverage', (req, res) => {
+  const img = getImageOr404(req.params.id);
+  if (!img) return res.status(404).json({ error: '图片不存在' });
+  const body = req.body || {};
+  let resolved;
+  try {
+    resolved = mergeSvc.resolveFieldIdentifier(img.fields, body.fieldId);
+  } catch (e) {
+    return badRequest(res, e.message);
+  }
+  const coverage = mergeSvc.buildFieldCoverage(
+    resolved.field, img.cells, img.calib ? img.calib.scale : null);
+  res.json({
+    scope: 'draft',
+    imageId: img.id,
+    version: img.version, // 返回计算时的草稿版本，便于调用方识别是否已是最新数据
+    calibrated: !!img.calib,
+    matchedBy: resolved.matchBy,
+    coverage
+  });
+});
+
 // ---------- 草稿修订时间线（只追加）与恢复 ----------
 //
 // 每次成功写入（定标/轮廓/视野/迁移/恢复）都已在同一事务留下完整快照修订；
@@ -724,6 +752,34 @@ app.post('/api/reports/:id/field-merge', (req, res) => {
     draftVersion: report.draftVersion,
     calibrated: !!report.calib,
     stats
+  });
+});
+
+// ---------- 报告内单视野细胞覆盖核对（只读；只使用发布时冻结数据） ----------
+//
+// 请求体：{ fieldId: string }，视野 id 或名称均可，且必须来自该报告冻结的 fields。
+// 只取发布时冻结的轮廓/视野/标尺：后续草稿修改或报告更正不改变旧报告结果。
+// 视野标识不存在或不属于该报告 → 400；报告不存在 → 404；查询不写回报告。
+app.post('/api/reports/:id/field-coverage', (req, res) => {
+  const report = getReportOr404(req.params.id);
+  if (!report) return res.status(404).json({ error: '报告不存在' });
+  const body = req.body || {};
+  let resolved;
+  try {
+    resolved = mergeSvc.resolveFieldIdentifier(report.fields, body.fieldId);
+  } catch (e) {
+    return badRequest(res, e.message);
+  }
+  const coverage = mergeSvc.buildFieldCoverage(
+    resolved.field, report.cells, report.calib ? report.calib.scale : null);
+  res.json({
+    scope: 'report',
+    reportId: report.id,
+    title: report.title,
+    draftVersion: report.draftVersion,
+    calibrated: !!report.calib,
+    matchedBy: resolved.matchBy,
+    coverage
   });
 });
 

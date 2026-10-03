@@ -41,6 +41,8 @@ const Editor = {
   tool: 'cell',
   migrate: null,       // 细胞迁移工作状态（见 resetMigration）
   mergeSelected: null, // 多视野合并统计勾选的视野 id（按 this.fields 顺序）
+  coverageQuery: null, // 单视野覆盖核对当前输入的视野标识（id 或名称）
+  coverageResult: null,// 最近一次本地覆盖核对结果；出错时保存 {error}
   revisions: null,     // 时间线列表（由新到旧）
   preview: null,       // 正在预览的修订快照 {rev, readVersion}；null 表示未预览
 
@@ -51,6 +53,8 @@ const Editor = {
     const data = await API.getImage(id);
     await this.applyServerData(data);
     this.mergeSelected = [];
+    this.coverageQuery = '';
+    this.coverageResult = null;
     this.resetMigration();
     this.preview = null;
     this.loadRevisions();
@@ -113,6 +117,10 @@ const Editor = {
       seenIds.add(id);
       return true;
     });
+    // 覆盖核对：保留输入框文本；最近结果只在对应视野仍存在时保留（否则由渲染重新报错）
+    if (this.coverageResult && !this.coverageResult.error) {
+      if (!this.fields.some((f) => f.id === this.coverageResult.fieldId)) this.coverageResult = null;
+    }
     if (this.view) this.view.render();
   },
 
@@ -1099,6 +1107,7 @@ const Editor = {
     document.getElementById('tool-hole').disabled = !this.activeCellId;
     document.getElementById('tool-fieldhole').disabled = !this.activeFieldId;
     this.renderMergePanel(c);
+    this.renderCoveragePanel(c);
     this.renderMigratePanel();
     this.renderDraftInfo();
   },
@@ -1173,6 +1182,106 @@ const Editor = {
       ${calib ? '' : '当前<b>未定标</b>：细胞数保留，面积/密度/总和显示“待定标”。'}</p>`;
   },
 
+  // ---------- 单视野细胞覆盖核对（草稿实时；页端与服务端共用 MergeStats） ----------
+
+  // 像素面积展示（始终给出）：整数取整，小数保留 3 位
+  fmtPx(v) {
+    if (!Number.isFinite(v)) return '—';
+    return (Math.round(v * 1000) / 1000).toLocaleString('zh-CN', { maximumFractionDigits: 3 });
+  },
+
+  runCoverageQuery() {
+    const input = document.getElementById('coverage-field-id');
+    this.coverageQuery = input ? input.value.trim() : '';
+    this.computeCoverage();
+  },
+
+  // 以当前工作副本实时计算（含未保存轮廓/视野），不请求服务端、不改动草稿
+  computeCoverage() {
+    const resEl = document.getElementById('coverage-result');
+    if (!resEl) return;
+    const q = this.coverageQuery || '';
+    if (!this.fields.length) {
+      this.coverageResult = null;
+      resEl.innerHTML = '<p class="hint">尚无取样视野。圈定并保存视野后可核对覆盖。</p>';
+      return;
+    }
+    if (!q) {
+      this.coverageResult = null;
+      resEl.innerHTML = '<p class="hint">输入视野 id 或名称后点「核对覆盖」。</p>';
+      return;
+    }
+    let resolved;
+    try {
+      resolved = window.MergeStats.resolveFieldIdentifier(this.fields, q);
+    } catch (e) {
+      this.coverageResult = { error: e.message };
+      resEl.innerHTML = `<p class="merge-error">${e.message}</p>`;
+      return;
+    }
+    const calib = this.img ? this.img.calib : null;
+    this.coverageResult = window.MergeStats.buildFieldCoverage(
+      resolved.field, this.cells, calib ? calib.scale : null);
+    this.coverageResult.matchedBy = resolved.matchBy;
+    this.renderCoverageResult(calib);
+  },
+
+  renderCoverageResult(calib) {
+    const resEl = document.getElementById('coverage-result');
+    if (!resEl) return;
+    const s = this.coverageResult;
+    if (!s) { resEl.innerHTML = ''; return; }
+    if (s.error) { resEl.innerHTML = `<p class="merge-error">${s.error}</p>`; return; }
+    const contributing = (s.contributingCells || [])
+      .map((c) => c.name || c.key).join('、');
+    resEl.innerHTML = `
+      <table class="measure compact">
+        <tbody>
+          <tr><th>视野</th><td>${s.fieldName || s.fieldId}${s.matchedBy === 'name' ? '（按名称匹配）' : ''}</td></tr>
+          <tr><th>视野净面积</th>
+            <td>${this.fmtPx(s.fieldAreaPx)} px² · ${s.fieldAreaText}${s.calibrated ? ' mm²' : ''}</td></tr>
+          <tr><th>细胞覆盖面积</th>
+            <td>${this.fmtPx(s.coveredAreaPx)} px² · ${s.coveredAreaText}${s.calibrated ? ' mm²' : ''}</td></tr>
+          <tr><th>未覆盖面积</th>
+            <td>${this.fmtPx(s.uncoveredAreaPx)} px² · ${s.uncoveredAreaText}${s.calibrated ? ' mm²' : ''}</td></tr>
+          <tr><th>覆盖率</th><td><b>${s.coverageText}</b></td></tr>
+        </tbody>
+      </table>
+      <p class="hint">覆盖按<b>几何交集</b>计算：跨边界细胞只计视野内部分，多个细胞重叠只计一次，
+      孔洞与仅边界接触不贡献面积；与按质心计数的密度统计无关。
+      有交集的细胞 ${s.contributingCellCount} 个：${contributing || '（无）'}。
+      ${this.fieldsDirty || this.dirty ? '当前含<b>未保存</b>轮廓/视野，结果按本地工作副本实时计算；保存后与服务端一致。' : ''}
+      ${calib ? '' : '当前<b>未定标</b>：像素面积与覆盖率照常显示，物理面积为“待定标”。'}</p>`;
+  },
+
+  // 侧边栏重渲染时：同步输入框、datalist 与最近结果（保留输入，不抢夺焦点）
+  renderCoveragePanel(calib) {
+    const input = document.getElementById('coverage-field-id');
+    const list = document.getElementById('coverage-field-options');
+    const resEl = document.getElementById('coverage-result');
+    if (!input || !resEl) return;
+    if (document.activeElement !== input) input.value = this.coverageQuery || '';
+    if (list) {
+      const escHtml = (s) => String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+      list.innerHTML = this.fields.map((f, i) => {
+        const name = f.name || `视野 ${i + 1}`;
+        return `<option value="${escHtml(f.id)}">${escHtml(name)}</option>`;
+      }).join('');
+    }
+    if (!this.fields.length) {
+      this.coverageResult = null;
+      resEl.innerHTML = '<p class="hint">尚无取样视野。圈定并保存视野后可核对覆盖。</p>';
+      return;
+    }
+    // 已有查询则按最新工作副本重算（实时）；否则仅显示占位
+    if (this.coverageQuery) this.computeCoverage();
+    else if (!this.coverageResult) {
+      resEl.innerHTML = '<p class="hint">输入视野 id 或名称后点「核对覆盖」。</p>';
+    }
+  },
+
   toast(msg, ok = false) {
     const el = document.getElementById('status-toast');
     el.textContent = msg;
@@ -1223,6 +1332,12 @@ const Editor = {
     document.getElementById('migrate-reset').onclick = () => this.clearMigratePoints();
     document.getElementById('migrate-preview').onclick = () => this.previewMigration();
     document.getElementById('migrate-confirm').onclick = () => this.confirmMigration();
+
+    // 单视野覆盖核对（草稿实时、只读）
+    document.getElementById('coverage-run').onclick = () => this.runCoverageQuery();
+    document.getElementById('coverage-field-id').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); this.runCoverageQuery(); }
+    });
   }
 };
 

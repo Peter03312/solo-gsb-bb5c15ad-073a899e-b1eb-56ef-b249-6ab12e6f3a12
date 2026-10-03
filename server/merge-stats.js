@@ -1,11 +1,16 @@
 'use strict';
 
-// 多视野合并统计：同一草稿/报告内至少两个取样视野净区域（外环扣除孔洞）的几何并集。
+// 多视野合并统计 / 单视野细胞覆盖核对：
 //
-// 并集面积：把全部外环/孔洞边收集为线段，在所有交点（正交叉、T 接、共线重叠端点）处切分，
+// 多视野合并：同一草稿/报告内至少两个取样视野净区域（外环扣除孔洞）的几何并集。
+// 单视野覆盖核对：细胞净区域（外环扣除孔洞）与单个视野净区域的几何交集——
+//   跨视野边界的细胞只计内部部分；多个细胞相互重叠只计一次；孔洞与仅边界接触不贡献面积。
+//
+// 排列面积：把全部外环/孔洞边收集为线段，在所有交点（正交叉、T 接、共线重叠端点）处切分，
 //           构造平面排列（planar arrangement），沿半边缘遍历每个面边界圈：
 //           一个面（含孔洞/嵌套环）的面积 = 其全部边界圈有向面积之和
-//           （外圈 CCW 为正、内圈 CW 为负）；并集面积 = Σ 有向面积 × 1[该面被某视野覆盖]。
+//           （外圈 CCW 为正、内圈 CW 为负）。并集面积 = Σ 有向面积 × 1[该面被某视野覆盖]；
+//           覆盖面积 = Σ 有向面积 × 1[该面在目标视野净区域内且在某细胞净区域内]。
 //
 // 严格位于并集内部：点周界的每个小扇区（相邻入射射线之间）都必须被某个视野净区域覆盖；
 //           并集外边界外侧存在未覆盖扇区 → false；两个视野贴合接缝处两侧都被覆盖 → true
@@ -117,9 +122,12 @@
   }
 
   // ---------- 平面排列 ----------
-
-  function buildUnionContext(fields) {
-    const list = Array.isArray(fields) ? fields : [];
+  //
+  // shapes：净区域数组，每个元素 {outer, holes}（视野或细胞均可；不自交、孔洞严格在内）。
+  // 返回切分后的边、半边缘、全部面边界圈 loops（每个圈带 sampleLeft 采样点），
+  // 覆盖属性由调用方按自身语义对采样点判定，排列本身不做归属。
+  function buildArrangement(shapes) {
+    const list = Array.isArray(shapes) ? shapes : [];
 
     // 节点（交点吸附到同一对象，保证切分后各线段共享节点）
     const buckets = new Map();
@@ -150,6 +158,7 @@
     const rawEdges = [];   // [{a, b}]
     const splitSets = [];  // 与 rawEdges 对应：Set<node>
     for (const f of list) {
+      if (!f || !Array.isArray(f.outer)) continue; // 防御：跳过非法净区域
       const rings = [f.outer].concat(f.holes || []);
       for (const ring of rings) {
         for (let i = 0; i < ring.length; i++) {
@@ -269,9 +278,14 @@
 
     // 遍历所有有向面边界圈：一个面（含孔洞/嵌套环）的面积 =
     // 其全部边界圈有向面积之和（外圈 CCW 为正、内圈 CW 为负）。
-    // 每个圈左侧恰为一个面，故并集面积 = Σ 有向面积 × 1[左侧面被某视野净区域覆盖]。
-    let unionAreaPx = 0;
-    const faces = [];
+    //
+    // 面积归属不用“先组面再分类”，而用有向面积求和：对每个圈 C，取其左侧一个微小
+    // 采样点 q（恰在该圈对应的面材料一侧），用谓词 P(q) 判定该面是否计入目标区域，
+    // 目标区域面积 = Σ_C sign(C)·P(q_C)·|area(C)|。
+    // 关键是符号必须与圈的有向面积一致：CCW 外圈左侧朝内（+），CW 孔洞内圈左侧朝外（−），
+    // 因此孔洞被其它形状部分/全部占据时，内外圈即便落在不同指示量的面内也能正确加减
+    // （例如细胞完全落入视野孔洞：+内圈面 −外圈面 = 0）。
+    const loops = [];
     for (const start of halfEdges) {
       if (start.visited) continue;
       const pts = [];
@@ -282,18 +296,37 @@
         he = he.next;
       } while (he && he !== start);
       if (!he) continue; // 防御：排列不闭合
-      const area = geo.signedArea(pts);
-      const q = sampleLeft(start);
-      let coverage = 0;
-      for (const f of list) {
-        if (pointInFieldNet(q, f)) coverage++;
-      }
-      // 覆盖 ≥ 1 的面贡献其有向面积（孔洞内圈为负，外面圈为负且覆盖 0）
-      if (coverage >= 1) unionAreaPx += area;
-      faces.push({ area, coverage });
+      loops.push({ area: geo.signedArea(pts), q: sampleLeft(start) });
     }
 
-    return { fields: list, nodes, edges, halfEdges, faces, unionAreaPx, onAnyEdge };
+    return { shapes: list, nodes, edges, halfEdges, loops, faces: loops, onAnyEdge };
+  }
+
+  // 有向面积求和：Σ sign(C)·predicate(q_C)·|area(C)|。
+  // predicate 判定圈左侧的面是否属于目标区域；符号随圈方向（外正内负），
+  // 调用方只需给出“该面在不在目标区域内”的布尔判定，孔洞/嵌套由符号自动处理。
+  function signedAreaByPredicate(loops, predicate) {
+    let sum = 0;
+    for (const loop of loops) {
+      if (!predicate(loop.q)) continue;
+      sum += loop.area; // 有向面积自带符号：CCW +、CW −
+    }
+    return sum;
+  }
+
+  function buildUnionContext(fields) {
+    const ctx = buildArrangement(fields);
+    const unionAreaPx = signedAreaByPredicate(ctx.loops, (q) =>
+      ctx.shapes.some((f) => pointInFieldNet(q, f)));
+    return {
+      fields: ctx.shapes,
+      nodes: ctx.nodes,
+      edges: ctx.edges,
+      halfEdges: ctx.halfEdges,
+      faces: ctx.loops,
+      unionAreaPx,
+      onAnyEdge: ctx.onAnyEdge
+    };
   }
 
   // 点是否严格位于并集【内部】（并集边界上为 false；视野贴合接缝为并集内部 → true）
@@ -346,6 +379,155 @@
       if (!sectorCovered(a0, a1)) return false;
     }
     return true;
+  }
+
+  // ---------- 单视野细胞覆盖核对 ----------
+  //
+  // 与密度统计完全不同：覆盖面积按细胞净区域与视野净区域的【几何交集】计算
+  // （跨边界细胞只计视野内部分、多细胞重叠只计一次、孔洞与仅边界接触不贡献），
+  // 不是按质心归属后的细胞净面积求和。
+
+  const PENDING_COVERAGE = '待定标';
+
+  // 解析视野标识：先按 id 精确匹配，再按名称（trim 后）精确匹配。
+  // 空标识 / 不存在均抛出明确错误（由接口层返回 400）。返回 {field, index, matchBy}。
+  function resolveFieldIdentifier(fields, identifier) {
+    const all = Array.isArray(fields) ? fields : [];
+    if (typeof identifier !== 'string' || !identifier.trim()) {
+      throw new Error('覆盖核对请求无效：fieldId 必须为非空的视野标识（id 或视野名称）');
+    }
+    const id = identifier;
+    const byIdIndex = all.findIndex((f) => f && typeof f.id === 'string' && f.id === id);
+    if (byIdIndex >= 0) return { field: all[byIdIndex], index: byIdIndex, matchBy: 'id' };
+    const name = identifier.trim();
+    const nameMatches = [];
+    all.forEach((f, i) => {
+      if (f && typeof f.name === 'string' && f.name.trim() === name) nameMatches.push(i);
+    });
+    if (nameMatches.length === 1) return { field: all[nameMatches[0]], index: nameMatches[0], matchBy: 'name' };
+    if (nameMatches.length > 1) {
+      throw new Error(`视野名称「${name}」在本数据中存在 ${nameMatches.length} 个同名视野，` +
+        '无法唯一确定，请改用视野 id 查询（可在草稿/报告详情的 fields 中获取）');
+    }
+    throw new Error(`视野标识不存在：${id}（不属于该草稿/报告；请使用当前数据中存在的视野 id 或名称，` +
+      '草稿视野改动后请重新获取列表），请求被拒绝');
+  }
+
+  // 点 p 是否严格落在细胞净区域：严格在外环内，且不在任何孔洞内/边界上。
+  // 与 pointInFieldNet 同语义，单独命名以免后续对两类净区域分别演化。
+  function pointInCellNet(p, cell) {
+    if (!geo.pointStrictlyInside(p, cell.outer)) return false;
+    for (const h of cell.holes || []) {
+      if (geo.pointInsideOrOn(p, h)) return false;
+    }
+    return true;
+  }
+
+  function ringBBox(ring) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const p of ring) {
+      if (p.x < minX) minX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y > maxY) maxY = p.y;
+    }
+    return { minX, minY, maxX, maxY };
+  }
+
+  function bboxOfNet(shape) {
+    const b = ringBBox(shape.outer);
+    for (const h of shape.holes || []) {
+      const hb = ringBBox(h);
+      if (hb.minX < b.minX) b.minX = hb.minX;
+      if (hb.minY < b.minY) b.minY = hb.minY;
+      if (hb.maxX > b.maxX) b.maxX = hb.maxX;
+      if (hb.maxY > b.maxY) b.maxY = hb.maxY;
+    }
+    return b;
+  }
+
+  function bboxOverlap(a, b) {
+    return !(a.maxX <= b.minX || b.maxX <= a.minX || a.maxY <= b.minY || b.maxY <= a.minY);
+  }
+
+  // 单视野覆盖核对。
+  // field：目标视野（已解析）；cells：同一草稿/报告的全部细胞；scale：μm/px（未定标 null）。
+  function buildFieldCoverage(field, cells, scale) {
+    const safeCells = Array.isArray(cells) ? cells : [];
+
+    // 视野净面积（外环扣除孔洞）——与逐视野统计同公式
+    const fieldAreaPx = Math.abs(geo.signedArea(field.outer)) -
+      (field.holes || []).reduce((s, h) => s + Math.abs(geo.signedArea(h)), 0);
+
+    // 外环包围盒不相交的细胞不可能与视野产生正面积交集，直接剔除（孔洞在各自外环内部）
+    const fieldBox = bboxOfNet(field);
+    const candidates = [];
+    safeCells.forEach((cell, index) => {
+      if (cell && Array.isArray(cell.outer) && bboxOverlap(fieldBox, bboxOfNet(cell))) {
+        candidates.push({ cell, index });
+      }
+    });
+
+    // 目标视野 + 候选细胞的平面排列。
+    // 覆盖面积（有向面积求和）：圈左侧的面“在视野净区域内且在某细胞净区域内”时，
+    // 按圈方向加减其面积——跨边界细胞只计内部部分，多细胞重叠的外圈/孔洞内圈正确合并，
+    // 细胞完全落入视野孔洞时 +内圈−外圈=0。
+    const ctx = buildArrangement([field].concat(candidates.map((x) => x.cell)));
+    let coveredPx = signedAreaByPredicate(ctx.loops, (q) => {
+      if (!pointInFieldNet(q, field)) return false;
+      // 排列中第 0 个形状是视野，细胞从 1 开始
+      return candidates.some((_entry, ci) => pointInCellNet(q, ctx.shapes[ci + 1]));
+    });
+
+    // 贡献名单：逐细胞单独做有向面积求和，净贡献 > 0（与视野存在正面积交集）才列入；
+    // 只落在视野孔洞内的细胞正负抵消为 0，不算贡献。
+    const hitCellIndexes = [];
+    candidates.forEach((_entry, ci) => {
+      const a = signedAreaByPredicate(ctx.loops, (q) =>
+        pointInFieldNet(q, field) && pointInCellNet(q, ctx.shapes[ci + 1]));
+      if (a > EPS) hitCellIndexes.push(ci);
+    });
+
+    // 数值噪声夹取：覆盖面积落在 [0, 视野净面积]
+    coveredPx = Math.max(0, Math.min(coveredPx, Math.max(0, fieldAreaPx)));
+    const uncoveredPx = Math.max(0, fieldAreaPx - coveredPx);
+    const ratio = fieldAreaPx > 0 ? coveredPx / fieldAreaPx : 0;
+
+    const contributing = [...hitCellIndexes]
+      .map((ci) => candidates[ci])
+      .sort((a, b) => a.index - b.index)
+      .map((x) => ({ key: cellKey(x.cell, x.index), name: x.cell.name || '' }));
+
+    const calibrated = typeof scale === 'number' && Number.isFinite(scale) && scale > 0;
+    const toMm2 = (px) => px2ToMm2(px, scale);
+    const fieldAreaMm2 = calibrated ? toMm2(fieldAreaPx) : null;
+    const coveredAreaMm2 = calibrated ? toMm2(coveredPx) : null;
+    const uncoveredAreaMm2 = calibrated ? toMm2(uncoveredPx) : null;
+
+    return {
+      kind: 'field-coverage',
+      fieldId: field.id,
+      fieldName: (field && field.name && String(field.name).trim()) || '',
+      fieldHoles: Array.isArray(field.holes) ? field.holes.length : 0,
+      // 像素面积与覆盖率：未定标时照常给出
+      fieldAreaPx,
+      coveredAreaPx: coveredPx,
+      uncoveredAreaPx: uncoveredPx,
+      coverageRatio: round(ratio),
+      coveragePercent: round(ratio * 100, 2),
+      coverageText: `${round(ratio * 100, 2)}%`,
+      // 物理面积（mm²，与视野统计一致）：未定标为 null，展示文本为“待定标”
+      fieldAreaMm2,
+      coveredAreaMm2,
+      uncoveredAreaMm2,
+      fieldAreaText: calibrated ? String(round(fieldAreaMm2)) : PENDING_COVERAGE,
+      coveredAreaText: calibrated ? String(round(coveredAreaMm2)) : PENDING_COVERAGE,
+      uncoveredAreaText: calibrated ? String(round(uncoveredAreaMm2)) : PENDING_COVERAGE,
+      contributingCells: contributing,
+      contributingCellKeys: contributing.map((c) => c.key),
+      contributingCellCount: contributing.length,
+      calibrated
+    };
   }
 
   // ---------- 合并统计 ----------
@@ -407,7 +589,10 @@
   return {
     resolveMergeSelection,
     buildUnionContext,
+    buildArrangement,
     pointStrictlyInUnion,
-    buildMergeStats
+    buildMergeStats,
+    resolveFieldIdentifier,
+    buildFieldCoverage
   };
 });

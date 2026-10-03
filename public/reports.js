@@ -9,6 +9,7 @@ const Reports = {
   detailView: null,
   mergeReportId: null, // 当前详情报告 id
   mergeSelected: [],   // 报告内多视野合并统计勾选（冻结视野 id）
+  coverageReportId: null, // 覆盖核对当前报告 id（切换报告时清空结果）
 
   // 更正工作状态
   trace: null,        // 当前详情报告的追溯视图
@@ -247,6 +248,26 @@ const Reports = {
     this.mergeSelected = [];
     this.renderReportMerge(r);
 
+    // 单视野覆盖核对：走只读 HTTP API，只用发布时冻结数据；切换报告时重置
+    this.coverageReportId = r.id;
+    const covInput = document.getElementById('rp-coverage-field-id');
+    if (covInput) covInput.value = '';
+    const covOptions = document.getElementById('rp-coverage-field-options');
+    if (covOptions) {
+      covOptions.innerHTML = (r.fields || []).map((f, i) => {
+        const name = f.name || `视野 ${i + 1}`;
+        return `<option value="${this.esc(f.id)}">${this.esc(name)}</option>`;
+      }).join('');
+    }
+    document.getElementById('rp-coverage-result').innerHTML =
+      (r.fields || []).length
+        ? '<p class="hint">输入视野 id 或名称后点「核对覆盖」。</p>'
+        : '<p class="hint">本报告发布时未圈定取样视野，无法核对覆盖。</p>';
+    document.getElementById('rp-coverage-run').onclick = () => this.runCoverageQuery();
+    covInput.onkeydown = (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); this.runCoverageQuery(); }
+    };
+
     // 接触簇分析：只读查询，阈值仅影响本次结果；切换报告时重置
     this.contactReportId = r.id;
     this.contactResult = null;
@@ -292,6 +313,7 @@ const Reports = {
     this.contactResult = null;
     this.contactClusterId = null;
     this.contactHighlight = null;
+    this.coverageReportId = null;
   },
 
   esc(s) {
@@ -522,6 +544,57 @@ const Reports = {
       </table>
       <p class="hint">同一细胞在并集中只计一次。计入细胞：${counted || '（无）'}。
       结果只读取<b>发布时冻结数据</b>（发布时草稿 v${r.draftVersion}），不随后续草稿变化。</p>`;
+  },
+
+  // ---------- 单视野细胞覆盖核对（发布时冻结；只读 HTTP） ----------
+
+  fmtPx(v) {
+    if (!Number.isFinite(v)) return '—';
+    return (Math.round(v * 1000) / 1000).toLocaleString('zh-CN', { maximumFractionDigits: 3 });
+  },
+
+  async runCoverageQuery() {
+    if (!this.coverageReportId) return;
+    const resEl = document.getElementById('rp-coverage-result');
+    const raw = document.getElementById('rp-coverage-field-id').value.trim();
+    if (!raw) {
+      resEl.innerHTML = '<p class="merge-error">请输入视野 id 或视野名称。</p>';
+      return;
+    }
+    resEl.innerHTML = '<p class="hint">计算中…</p>';
+    try {
+      const body = await API.reportFieldCoverage(this.coverageReportId, raw);
+      if (body.reportId !== this.coverageReportId) return; // 期间已切换报告
+      this.renderCoverageResult(body);
+    } catch (e) {
+      // 400：视野标识不存在/不属于本报告/重名；404：报告不存在。不写回任何数据
+      resEl.innerHTML = `<p class="merge-error">${this.esc(e.message)}</p>`;
+    }
+  },
+
+  renderCoverageResult(body) {
+    const resEl = document.getElementById('rp-coverage-result');
+    const s = body.coverage;
+    const contributing = (s.contributingCells || [])
+      .map((c) => c.name || c.key).join('、');
+    resEl.innerHTML = `
+      <table class="measure compact">
+        <tbody>
+          <tr><th>视野</th><td>${this.esc(s.fieldName || s.fieldId)}${body.matchedBy === 'name' ? '（按名称匹配）' : ''}</td></tr>
+          <tr><th>视野净面积</th>
+            <td>${this.fmtPx(s.fieldAreaPx)} px² · ${this.esc(s.fieldAreaText)}${s.calibrated ? ' mm²' : ''}</td></tr>
+          <tr><th>细胞覆盖面积</th>
+            <td>${this.fmtPx(s.coveredAreaPx)} px² · ${this.esc(s.coveredAreaText)}${s.calibrated ? ' mm²' : ''}</td></tr>
+          <tr><th>未覆盖面积</th>
+            <td>${this.fmtPx(s.uncoveredAreaPx)} px² · ${this.esc(s.uncoveredAreaText)}${s.calibrated ? ' mm²' : ''}</td></tr>
+          <tr><th>覆盖率</th><td><b>${this.esc(s.coverageText)}</b></td></tr>
+        </tbody>
+      </table>
+      <p class="hint">覆盖按<b>几何交集</b>计算：跨边界细胞只计视野内部分，多个细胞重叠只计一次，
+      孔洞与仅边界接触不贡献面积；与按质心计数的密度统计无关。
+      有交集的细胞 ${s.contributingCellCount} 个：${this.esc(contributing) || '（无）'}。
+      结果只读取<b>发布时冻结数据</b>（发布时草稿 v${body.draftVersion}），
+      后续草稿修改或报告更正均不改变本报告结果；本查询不写回报告。</p>`;
   },
 
   // ---------- 接触簇分析（发布时冻结；阈值仅影响本次查询，不写回报告） ----------
