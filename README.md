@@ -10,7 +10,10 @@
 对已发布报告还可基于**同一切片的当前草稿**发起**更正**：生成新的不可变报告与图片快照、
 记录更正原因并串成**更正链**，列表展示每条链的当前有效报告、原因与历史，历史报告按原标识永久可查；
 还可在报告详情输入**间距阈值（μm，允许 0）**做**细胞接触簇分析**：按冻结轮廓与定标计算
-细胞两两**净区域最短间距**、阈值内邻居与**连通簇**，并在报告快照上**高亮**所选簇。
+细胞两两**净区域最短间距**、阈值内邻居与**连通簇**，并在报告快照上**高亮**所选簇；
+并可在切片编辑页和已发布报告页输入**视野标识**做**细胞标注覆盖核对**：按细胞净区域并集与
+视野净区域的**几何交集**给出视野净面积、细胞覆盖面积、未覆盖面积与覆盖率（跨边界细胞只计内部、
+多个细胞重叠只计一次、孔洞与仅边界接触不贡献，**不沿用按质心计数的密度规则**；草稿实时、报告冻结、查询只读）。
 
 - 技术栈：Node.js（Express）+ SQLite（better-sqlite3）+ 原生 Canvas 前端
 - 图片与数据**全部本地保存**（无任何外部服务依赖）：
@@ -19,6 +22,7 @@
   - 发布时的图片快照：`data/snapshots/`
   - 标注 PNG / CSV 在导出时实时生成
   - 接触簇分析为**只读实时计算**，不落盘
+  - 视野细胞覆盖核对同样为**只读实时计算**（不写草稿/修订/报告），不落盘
 
 ## 功能说明
 
@@ -142,11 +146,25 @@
     - 恢复只作用于草稿：**已发布报告与更正链完全不受影响**（发布只推进草稿版本、不产生修订）；
     - 有**未保存的轮廓/视野绘制**时，恢复会弹出确认；离开编辑页、切换切片或刷新/关闭页面
       前同样会先提示确认丢弃未保存绘制。
+15. **视野细胞标注覆盖核对（几何交集，只读）**：在**切片编辑页**与**已发布报告详情页**，
+    输入或选择**一个取样视野标识**，即按该视野与全部细胞的几何数据核对覆盖情况，返回并显示
+    **视野净面积、细胞覆盖面积、未覆盖面积与覆盖率**。
+    - 覆盖面积 = 该视野净区域（外环扣除孔洞）与**全部细胞净区域（外轮廓扣除孔洞）的几何并集**
+      的**几何交集**面积：跨越视野边界的细胞**只计落在视野内部的部分**；多个细胞相互重叠时
+      重叠处**只计一次**；细胞自身孔洞与视野孔洞**不贡献面积**；仅与视野边界接触
+      （切线、共边）而不进入内部的细胞**不贡献**（边界面积为 0）；
+    - 该指标是**面积覆盖**，与第 6 项**按净区域质心计数**的密度规则**完全不同、互不替代**；
+    - **未定标草稿**仍返回并显示**像素面积（px²）与覆盖率**，三项物理面积（mm²）显示
+      **「待定标」**；已定标后同时给出像素面积与 mm² 物理面积；
+    - 草稿侧按**当前轮廓、视野与标尺实时计算**（含未保存工作副本，保存后与服务端一致）；
+      报告侧**只使用发布时冻结数据**——后续草稿修改、重新定标或报告更正都**不改变**旧报告结果；
+    - 视野标识**不存在或不属于指定切片/报告**时明确报错（HTTP 400，错误中给出该 id）；
+      草稿/报告不存在 → **404**；查询**只读**：不改动草稿、不追加修订、不写回报告。
 
 ## 配置项
 
-本轮（细胞接触簇分析）**未引入新的环境变量、外部依赖或表结构变更**：分析为只读实时计算，
-不写库。此前各轮的幂等迁移（`fields`、`corrects_report_id`、`correction_reason` 列）
+本轮（视野细胞覆盖核对）**未引入新的环境变量、外部依赖或表结构变更**：覆盖核对为只读实时
+几何计算，不写库。此前各轮的幂等迁移（`fields`、`corrects_report_id`、`correction_reason` 列）
 在旧数据库启动时自动完成、无需手工变更。沿用既有配置：
 
 | 环境变量 | 默认值 | 说明 |
@@ -222,8 +240,15 @@ npm start
     **勾选至少两个视野**：立即给出所选视野净区域**几何并集**的净面积 mm²、细胞数、
     每 mm² 密度与计入细胞净面积总和；重叠处细胞只计一次，贴合接缝计入、并集外边界不计入；
     草稿侧随轮廓/视野/标尺实时重算，报告侧只显示发布时冻结结果；勾选不足两个或标识异常会明确拒绝；
-11. 需要对比两份报告时，进入 **报告比较**（流程不变，比较仍只读取冻结的细胞测量值）；
-12. 需要把已发布报告的细胞搬到另一张切片时，在目标切片的编辑页打开 **⑦ 细胞迁移**：
+11. 需要核对某个视野的**细胞标注覆盖**时，在编辑器 **⑦ 视野细胞覆盖核对**
+    （或报告详情「视野细胞覆盖核对（发布时冻结）」）面板的下拉框**选择一个视野**
+    （也可直接用其 `id` 调 HTTP 接口），点 **核对覆盖**：立即显示该视野的**净面积、
+    细胞覆盖面积、未覆盖面积与覆盖率**；覆盖按细胞净区域并集与视野净区域的**几何交集**计算，
+    跨边界细胞只计内部、重叠只计一次、孔洞与仅边界接触不贡献；编辑器侧随当前轮廓/视野/标尺
+    实时重算（未定标时给像素面积与覆盖率、物理面积「待定标」），报告侧只显示发布时冻结结果；
+    视野标识不存在或不属于该切片/报告会明确报错；查询只读，不改动草稿、修订与报告；
+12. 需要对比两份报告时，进入 **报告比较**（流程不变，比较仍只读取冻结的细胞测量值）；
+13. 需要把已发布报告的细胞搬到另一张切片时，在目标切片的编辑页打开 **⑧ 细胞迁移**：
     - 在下拉框选择**来源报告**（已发布），左侧出现来源快照；
     - 在来源快照上**依次单击 3 个对应点**（编号 1–3，自动连线提示顺序）；
     - 点 **🎯 标目标点工具**，在右侧大图上按**相同顺序**单击 3 个对应点
@@ -233,12 +258,12 @@ npm start
     - 预览全部通过后点 **确认迁移**（携带预览时读取的草稿版本；若期间草稿被改动，
       会提示版本过期并自动刷新，需重新预览）；成功后映射细胞追加到细胞列表末尾，
       测量表与视野统计立即按当前标尺重算，可照常继续编辑、保存或发布。
-13. 需要查看细胞接触簇时，打开**报告详情**，在「**接触簇分析（间距阈值）**」面板输入
+14. 需要查看细胞接触簇时，打开**报告详情**，在「**接触簇分析（间距阈值）**」面板输入
     间距阈值（μm，允许 0）后点 **分析接触簇**：页面列出每个细胞阈值内的邻居与
     最短净区域间距、以及由邻接关系形成的连通簇；**点击某个簇**即在右侧报告快照上
     **高亮**该簇全部细胞（再点一次该簇或「清除高亮」取消）。结果只读取发布时冻结数据，
     阈值仅影响本次查看，不写回报告。
-14. 需要查看或回到草稿的某个历史状态时，在切片编辑页打开 **⑧ 草稿修订时间线**：
+15. 需要查看或回到草稿的某个历史状态时，在切片编辑页打开 **⑨ 草稿修订时间线**：
     - 每次定标、保存轮廓、保存视野、确认迁移成功后都会新增一条修订（失败不留记录）；
     - 点某条修订的 **预览**：右侧画布只读叠加该修订的标尺、细胞轮廓与取样视野，
       面板显示按该修订标尺计算的测量与视野统计；再点 **退出预览** 返回当前编辑；
@@ -260,6 +285,7 @@ npm start
 │   ├── geometry.js    # 几何校验、面积/周长、净区域质心（服务端最终校验）
 │   ├── fields.js      # 取样视野：质心归属、mm²/密度统计、未定标“待定标”
 │   ├── merge-stats.js # 多视野几何并集（平面排列精确面积）+ 严格并集内部判定 + 合并统计（服务端/页端共用 UMD）
+│   ├── coverage.js    # 单视野细胞覆盖核对：净区域并集∩视野净区域几何交集、覆盖率（服务端/页端共用 UMD，只读）
 │   ├── compare.js     # 报告比较：手动一对一配对校验、冻结值差值/变化率视图
 │   ├── corrections.js # 报告更正链：原因校验、链构建/追溯摘要、发布校验与乐观冲突判定
 │   ├── revisions.js   # 草稿修订时间线：成功写入同事务追加完整快照、旧草稿基线补建、恢复
@@ -271,6 +297,8 @@ npm start
 ├── test-geometry.js   # 几何自测（npm test）
 ├── test-fields.js     # 视野密度统计自测（npm test）
 ├── test-merge.js      # 多视野合并统计自测（npm test）
+├── test-coverage.js   # 单视野覆盖核对纯几何自测（npm test）
+├── test-coverage-api.js # 单视野覆盖核对端到端 HTTP 自测（npm test，临时目录起服务）
 ├── test-compare.js    # 报告比较自测（npm test）
 ├── test-transfer.js   # 细胞迁移自测（npm test）
 ├── test-corrections.js # 报告更正链纯逻辑自测（npm test）
@@ -500,6 +528,148 @@ async function mergeFields(pathKind, id, fieldIds) {
 await mergeFields('images', process.env.IMG, ['f1', 'f2']);
 // 报告：只读取发布时冻结数据
 await mergeFields('reports', process.env.RID, ['f1', 'f2']);
+```
+
+## 视野细胞覆盖核对 HTTP 接口（几何交集，只读）
+
+输入**一个**取样视野标识，按该视野净区域与**全部细胞净区域并集**的**几何交集**核对覆盖：
+返回视野净面积、细胞覆盖面积、未覆盖面积与覆盖率。两个接口都是**只读**的——不写草稿、
+不追加修订、不写回报告。请求体均为 `{ "fieldId": string }`，标识为 `GET /api/images/:id` /
+`GET /api/reports/:id` 返回的某个视野 `id`。
+
+| 方法与路径 | 说明 |
+| --- | --- |
+| `POST /api/images/:id/field-coverage` | 草稿覆盖核对：按**当前**细胞轮廓、视野与标尺实时计算；草稿不存在 → 404 |
+| `POST /api/reports/:id/field-coverage` | 报告覆盖核对：只读取**发布时冻结**的 fields/cells/calib；报告不存在 → 404；草稿后续修改/重新定标/报告更正都不改变旧报告结果 |
+
+覆盖语义（与按质心计数的密度规则**不同**）：
+
+- 覆盖面积 = 视野净区域 ∩ (细胞₁净区域 ∪ 细胞₂净区域 ∪ …) 的**几何面积**，由平面排列精确计算；
+- 跨越视野边界的细胞**只计落在视野内的部分**；多个细胞重叠处**只计一次**；
+- 细胞自身孔洞、视野孔洞**不贡献**；仅与视野边界接触（切线、共边）不贡献（边界面积为 0）；
+- `contributingCells` 另给出每个细胞各自与视野的交集面积（重叠处会在多个细胞上重复出现，
+  但 `coveredArea*` 总计仍按并集只计一次）。
+
+错误语义（两个接口一致）：
+
+- `fieldId` 不是字符串 / 为空 / 全空白 → **400**；
+- 视野标识在该草稿/报告内**不存在**（含属于其它切片/报告的同名 id）→ **400**（错误中给出该 id）；
+- 草稿/报告本身不存在 → **404**。
+
+成功响应示例（已定标草稿；未定标草稿见后文；报告侧 `scope:"report"` 且返回 `draftVersion`）：
+
+```json
+{
+  "scope": "draft",
+  "imageId": "7ca3…",
+  "version": 4,
+  "calibrated": true,
+  "coverage": {
+    "kind": "field-coverage",
+    "fieldId": "f1",
+    "fieldName": "视野1",
+    "fieldHoles": 0,
+    "cellCount": 3,
+    "fieldAreaPx": 10000,
+    "coveredAreaPx": 7000,
+    "uncoveredAreaPx": 3000,
+    "coverageRatio": 0.7,
+    "coveragePercent": 70,
+    "coverageText": "70%",
+    "fieldAreaMm2": 0.01,
+    "coveredAreaMm2": 0.007,
+    "uncoveredAreaMm2": 0.003,
+    "fieldAreaText": "0.01",
+    "coveredAreaText": "0.007",
+    "uncoveredAreaText": "0.003",
+    "fieldAreaPxText": "10000",
+    "coveredAreaPxText": "7000",
+    "uncoveredAreaPxText": "3000",
+    "contributingCellCount": 2,
+    "contributingCells": [
+      { "key": "cellA", "name": "Alpha",
+        "intersectionAreaPx": 5000, "intersectionAreaMm2": 0.005,
+        "intersectionAreaText": "0.005" },
+      { "key": "cellB", "name": "Beta",
+        "intersectionAreaPx": 3000, "intersectionAreaMm2": 0.003,
+        "intersectionAreaText": "0.003" }
+    ],
+    "calibrated": true
+  }
+}
+```
+
+- **未定标草稿**：`calibrated:false`，三项像素面积（`*AreaPx` 与 `*AreaPxText`）、
+  `coverageRatio`/`coveragePercent`/`coverageText` 照常给出；三项物理面积 `*AreaMm2` 为 `null`，
+  三个 mm² 展示文本（`fieldAreaText`/`coveredAreaText`/`uncoveredAreaText`）统一为 **`"待定标"`**；
+- `coveragePercent` 为保留 4 位小数的百分数数值，`coverageText` 为保留 2 位小数的展示串
+  （如 `"70%"`、`"33.33%"`）；mm² 数值与文本保留 6 位小数，与视野统计同一规则；
+- 报告侧响应另含 `title` 与发布时 `draftVersion`。
+
+curl 示例（草稿 `IMG`；报告把 `/api/images/$IMG/field-coverage` 换成
+`/api/reports/$RID/field-coverage`）：
+
+```bash
+# 1) 取视野标识
+curl -s http://localhost:8080/api/images/$IMG | jq '.fields[] | {id, name}'
+
+# 2) 核对该视野的细胞覆盖
+curl -s -X POST http://localhost:8080/api/images/$IMG/field-coverage \
+  -H 'Content-Type: application/json' -d '{"fieldId":"f1"}' \
+  | jq '.coverage | {fieldName, fieldAreaMm2, coveredAreaMm2, uncoveredAreaMm2,
+                     coverageText, contributingCellCount, contributingCells}'
+
+# 报告：只取发布时冻结结果（草稿后续改动不影响）
+curl -s -X POST http://localhost:8080/api/reports/$RID/field-coverage \
+  -H 'Content-Type: application/json' -d '{"fieldId":"f1"}' \
+  | jq '{scope, draftVersion, coverage: .coverage |
+         {fieldName, coveredAreaMm2, uncoveredAreaMm2, coverageText}}'
+
+# 视野标识不存在 / 不属于该切片或报告 → 400
+curl -s -X POST http://localhost:8080/api/images/$IMG/field-coverage \
+  -H 'Content-Type: application/json' -d '{"fieldId":"nope"}'
+# -> { "error": "视野标识不存在：nope（请使用该切片/报告中存在的视野 id；草稿视野改动或删除后请重新获取列表），请求被拒绝" }
+
+# 缺 fieldId / 非字符串 → 400；草稿或报告不存在 → 404
+```
+
+Node.js 示例（无第三方依赖；未定标时用像素面积，物理面积显示“待定标”）：
+
+```js
+const base = 'http://localhost:8080';
+
+async function checkFieldCoverage(pathKind, id, fieldId) {
+  const res = await fetch(`${base}/api/${pathKind}/${id}/field-coverage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ fieldId })
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const e = new Error(body.error || `HTTP ${res.status}`);
+    e.status = res.status;
+    throw e; // 400：fieldId 非法/不存在/不属于该切片或报告；404：草稿或报告不存在
+  }
+  const c = body.coverage;
+  if (c.calibrated) {
+    console.log(`${c.fieldName}：净面积 ${c.fieldAreaText} mm²，覆盖 ${c.coveredAreaText} mm²，` +
+                `未覆盖 ${c.uncoveredAreaText} mm²，覆盖率 ${c.coverageText}`);
+  } else {
+    // 未定标草稿：像素面积与覆盖率可用，物理面积待定标
+    console.log(`${c.fieldName}（未定标）：净面积 ${c.fieldAreaPxText} px²，` +
+                `覆盖 ${c.coveredAreaPxText} px²，未覆盖 ${c.uncoveredAreaPxText} px²，` +
+                `覆盖率 ${c.coverageText}；物理面积待定标`);
+  }
+  for (const cell of c.contributingCells) {
+    console.log(`  · ${cell.name}：视野内交集 ${cell.intersectionAreaText} mm²`);
+  }
+  return body;
+}
+
+// 草稿：按当前轮廓/视野/标尺实时重算（查询不改草稿、不追加修订）
+await checkFieldCoverage('images', process.env.IMG, 'f1');
+// 报告：只读取发布时冻结数据（后续草稿修改或更正都不改变旧报告）
+await checkFieldCoverage('reports', process.env.RID, 'f1');
 ```
 
 ## 细胞迁移 HTTP 接口（三点对应仿射变换）
@@ -908,6 +1078,7 @@ const result = await API.restoreRevision(imgId, revisions[2].id, currentVersion)
 | `PUT /api/images/:id/contours` | 整批保存细胞轮廓（带 `version`；非法 400 整批不生效；过期 409） |
 | **`PUT /api/images/:id/fields`** | **整批保存取样视野（带 `version`；非法 400 整批不生效；过期 409）** |
 | **`POST /api/images/:id/field-merge`** | **多视野合并统计（只读，按草稿当前数据实时计算；不足两个/重复/不存在 400）** |
+| **`POST /api/images/:id/field-coverage`** | **单视野覆盖核对（只读，几何交集实时计算）：`{fieldId}` → 净/覆盖/未覆盖面积与覆盖率；标识非法或不存在 400，草稿不存在 404；不改草稿/修订** |
 | `POST /api/images/:id/publish` | 发布冻结（含视野与统计；带 `version`，过期 409） |
 | **`POST /api/images/:id/migrate/preview`** | **迁移预览：三点对应仿射映射 + 逐细胞校验（不写入；返回预览时目标草稿版本）** |
 | **`POST /api/images/:id/migrate`** | **确认迁移（带预览时版本，过期 409；任一校验失败 400 整批不写入）** |
@@ -919,6 +1090,7 @@ const result = await API.restoreRevision(imgId, revisions[2].id, currentVersion)
 | **`GET /api/reports/:id/trace`** | **追溯某份报告所在更正链（根、末端、位置、由旧到新 members）** |
 | **`POST /api/reports/:id/correct`** | **发起更正：`{reason, draftVersion, expectedTipId, title?}`；过期 409 返回最新信息；失败不留报告/快照** |
 | **`POST /api/reports/:id/field-merge`** | **报告内多视野合并统计（只读，只取发布时冻结数据；不足两个/重复/不存在 400）** |
+| **`POST /api/reports/:id/field-coverage`** | **报告内单视野覆盖核对（只读，只取发布时冻结数据）：`{fieldId}` → 净/覆盖/未覆盖面积与覆盖率；标识非法或不属于该报告 400，报告不存在 404；不写回报告** |
 | **`POST /api/reports/:id/contacts`** | **细胞接触簇分析（只读）：`{thresholdUm}`（μm，允许 0）→ 阈值内邻居/最短净区域间距/连通簇；阈值负数或非有限数 400，报告不存在 404** |
 | `GET /api/reports/:id/file` / `/png` | 发布时图片快照 / 标注 PNG |
 | `GET /api/reports/:id/csv` | 测量 CSV（μm²，原义不变） |

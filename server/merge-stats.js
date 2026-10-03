@@ -116,10 +116,14 @@
     return ids.map((id) => byId.get(id));
   }
 
-  // ---------- 平面排列 ----------
-
-  function buildUnionContext(fields) {
-    const list = Array.isArray(fields) ? fields : [];
+  // ---------- 通用平面排列 ----------
+  //
+  // 把任意一组简单环（外环/孔洞均可）的全部边在所有交点处切分，构造平面排列：
+  // 遍历半边缘得到每个有向面边界圈，给出该圈的有向面积（外圈 CCW 为正、内圈 CW 为负）
+  // 与其左侧面内采样点。调用方用采样点判定该面是否属于某个区域（视野净区域/细胞净区域），
+  // 即可精确计算并集、交集等区域面积。
+  function buildArrangement(rings) {
+    const list = Array.isArray(rings) ? rings : [];
 
     // 节点（交点吸附到同一对象，保证切分后各线段共享节点）
     const buckets = new Map();
@@ -146,19 +150,16 @@
       return n;
     }
 
-    // 收集全部环边（外环 + 孔洞），每条边维护切分点集合
+    // 收集全部环边，每条边维护切分点集合
     const rawEdges = [];   // [{a, b}]
     const splitSets = [];  // 与 rawEdges 对应：Set<node>
-    for (const f of list) {
-      const rings = [f.outer].concat(f.holes || []);
-      for (const ring of rings) {
-        for (let i = 0; i < ring.length; i++) {
-          const a = nodeFor(ring[i]);
-          const b = nodeFor(ring[(i + 1) % ring.length]);
-          if (a === b) continue; // 退化零长边（防御）
-          rawEdges.push({ a, b });
-          splitSets.push(new Set([a, b]));
-        }
+    for (const ring of list) {
+      for (let i = 0; i < ring.length; i++) {
+        const a = nodeFor(ring[i]);
+        const b = nodeFor(ring[(i + 1) % ring.length]);
+        if (a === b) continue; // 退化零长边（防御）
+        rawEdges.push({ a, b });
+        splitSets.push(new Set([a, b]));
       }
     }
 
@@ -269,8 +270,6 @@
 
     // 遍历所有有向面边界圈：一个面（含孔洞/嵌套环）的面积 =
     // 其全部边界圈有向面积之和（外圈 CCW 为正、内圈 CW 为负）。
-    // 每个圈左侧恰为一个面，故并集面积 = Σ 有向面积 × 1[左侧面被某视野净区域覆盖]。
-    let unionAreaPx = 0;
     const faces = [];
     for (const start of halfEdges) {
       if (start.visited) continue;
@@ -282,18 +281,35 @@
         he = he.next;
       } while (he && he !== start);
       if (!he) continue; // 防御：排列不闭合
-      const area = geo.signedArea(pts);
-      const q = sampleLeft(start);
-      let coverage = 0;
-      for (const f of list) {
-        if (pointInFieldNet(q, f)) coverage++;
-      }
-      // 覆盖 ≥ 1 的面贡献其有向面积（孔洞内圈为负，外面圈为负且覆盖 0）
-      if (coverage >= 1) unionAreaPx += area;
-      faces.push({ area, coverage });
+      faces.push({ area: geo.signedArea(pts), samplePoint: sampleLeft(start) });
     }
 
-    return { fields: list, nodes, edges, halfEdges, faces, unionAreaPx, onAnyEdge };
+    return { rings: list, nodes, edges, halfEdges, faces, onAnyEdge };
+  }
+
+  // ---------- 所选视野的并集排列 ----------
+
+  function buildUnionContext(fields) {
+    const list = Array.isArray(fields) ? fields : [];
+    // 全部外环 + 孔洞环进入同一份平面排列
+    const rings = [];
+    for (const f of list) rings.push(f.outer, ...(f.holes || []));
+    const ctx = buildArrangement(rings);
+
+    // 遍历所有有向面边界圈：每个圈左侧恰为一个面，故并集面积 =
+    // Σ 有向面积 × 1[左侧面被某视野净区域覆盖]（孔洞内圈为负，外面圈为负且覆盖 0）。
+    let unionAreaPx = 0;
+    const faces = ctx.faces.map((face) => {
+      let coverage = 0;
+      for (const f of list) {
+        if (pointInFieldNet(face.samplePoint, f)) coverage++;
+      }
+      if (coverage >= 1) unionAreaPx += face.area;
+      return { area: face.area, coverage };
+    });
+
+    return { fields: list, nodes: ctx.nodes, edges: ctx.edges, halfEdges: ctx.halfEdges,
+             faces, unionAreaPx, onAnyEdge: ctx.onAnyEdge };
   }
 
   // 点是否严格位于并集【内部】（并集边界上为 false；视野贴合接缝为并集内部 → true）
@@ -406,6 +422,7 @@
 
   return {
     resolveMergeSelection,
+    buildArrangement,
     buildUnionContext,
     pointStrictlyInUnion,
     buildMergeStats

@@ -10,6 +10,11 @@ const Reports = {
   mergeReportId: null, // 当前详情报告 id
   mergeSelected: [],   // 报告内多视野合并统计勾选（冻结视野 id）
 
+  // 单视野覆盖核对状态（只读查询；只使用发布时冻结数据）
+  coverageReportId: null,
+  coverageFieldId: null,
+  coverageResult: null,
+
   // 更正工作状态
   trace: null,        // 当前详情报告的追溯视图
   draft: null,        // 同一切片的当前草稿
@@ -247,6 +252,13 @@ const Reports = {
     this.mergeSelected = [];
     this.renderReportMerge(r);
 
+    // 单视野覆盖核对：只使用发布时冻结数据；切换报告时重置
+    this.coverageReportId = r.id;
+    this.coverageFieldId = null;
+    this.coverageResult = null;
+    this.renderReportCoverage(r);
+    document.getElementById('rp-coverage-run').onclick = () => this.runReportCoverage();
+
     // 接触簇分析：只读查询，阈值仅影响本次结果；切换报告时重置
     this.contactReportId = r.id;
     this.contactResult = null;
@@ -285,6 +297,9 @@ const Reports = {
     if (this.detailView) this.detailView.destroy(), (this.detailView = null);
     this.mergeReportId = null;
     this.mergeSelected = [];
+    this.coverageReportId = null;
+    this.coverageFieldId = null;
+    this.coverageResult = null;
     this.trace = null;
     this.draft = null;
     this.correcting = false;
@@ -522,6 +537,87 @@ const Reports = {
       </table>
       <p class="hint">同一细胞在并集中只计一次。计入细胞：${counted || '（无）'}。
       结果只读取<b>发布时冻结数据</b>（发布时草稿 v${r.draftVersion}），不随后续草稿变化。</p>`;
+  },
+
+  // ---------- 单视野细胞覆盖核对（发布时冻结；只读，不写回报告） ----------
+
+  renderReportCoverage(r) {
+    const sel = document.getElementById('rp-coverage-field');
+    const resEl = document.getElementById('rp-coverage-result');
+    if (!sel || !resEl) return;
+    const fields = r.fields || [];
+    sel.innerHTML = '';
+    if (!fields.length) {
+      sel.innerHTML = '<option value="">— 本报告无取样视野 —</option>';
+      sel.disabled = true;
+      resEl.innerHTML = '<p class="hint">本报告发布时未圈定取样视野，无法核对覆盖。</p>';
+      return;
+    }
+    sel.disabled = false;
+    const ph = document.createElement('option');
+    ph.value = '';
+    ph.textContent = '— 选择要核对的视野 —';
+    sel.appendChild(ph);
+    fields.forEach((f, i) => {
+      const opt = document.createElement('option');
+      opt.value = f.id;
+      opt.textContent = f.name || `视野 ${i + 1}`;
+      sel.appendChild(opt);
+    });
+    sel.value = (this.coverageFieldId && fields.some((f) => f.id === this.coverageFieldId))
+      ? this.coverageFieldId : '';
+    sel.onchange = () => {
+      this.coverageFieldId = sel.value || null;
+      this.coverageResult = null;
+      resEl.innerHTML = '<p class="hint">视野已选择，点击「核对覆盖」。查询只读，不写回报告。</p>';
+    };
+
+    if (!this.coverageResult) {
+      resEl.innerHTML = '<p class="hint">选择本报告内一个视野后点击「核对覆盖」。结果只读取发布时冻结数据。</p>';
+      return;
+    }
+    const cv = this.coverageResult;
+    const contrib = (cv.contributingCells || []);
+    const contribTxt = contrib.length
+      ? contrib.map((c) => `${this.esc(c.name) || c.key}（${cv.calibrated ? `${c.intersectionAreaText} mm²` : `${c.intersectionAreaPx} px²`}）`).join('、')
+      : '（无细胞覆盖该视野内部）';
+    const row = (label, mmText, pxText, px) => cv.calibrated
+      ? `<tr><th>${label}</th><td>${mmText} <span class="muted">mm²</span></td></tr>`
+      : `<tr><th>${label}</th><td class="muted">待定标 mm²</td><td>${pxText != null ? pxText : px} px²</td></tr>`;
+    resEl.innerHTML = `
+      <table class="measure compact">
+        <tbody>
+          <tr><th>视野</th><td>${this.esc(cv.fieldName)}（孔洞 ${cv.fieldHoles} 个）</td></tr>
+          ${row('视野净面积', cv.fieldAreaText, cv.fieldAreaPxText, cv.fieldAreaPx)}
+          ${row('细胞覆盖面积', cv.coveredAreaText, cv.coveredAreaPxText, cv.coveredAreaPx)}
+          ${row('未覆盖面积', cv.uncoveredAreaText, cv.uncoveredAreaPxText, cv.uncoveredAreaPx)}
+          <tr><th>覆盖率</th><td><b>${cv.coverageText}</b>
+            <span class="muted">（覆盖 ${cv.coveragePercent}% / 100%）</span></td></tr>
+        </tbody>
+      </table>
+      <p class="hint">贡献细胞（几何交集，跨边界只计内部、重叠只计一次、孔洞与仅边界接触不贡献）：${contribTxt}。
+      结果只读取<b>发布时冻结数据</b>（发布时草稿 v${r.draftVersion}），草稿后续修改或报告更正都不改变本报告。</p>`;
+  },
+
+  async runReportCoverage() {
+    if (!this.coverageReportId) return;
+    const resEl = document.getElementById('rp-coverage-result');
+    const fid = document.getElementById('rp-coverage-field').value;
+    if (!fid) {
+      resEl.innerHTML = '<p class="hint">请先选择一个本报告内的视野。</p>';
+      return;
+    }
+    resEl.innerHTML = '<p class="hint">计算中…</p>';
+    try {
+      const resp = await API.reportFieldCoverage(this.coverageReportId, fid);
+      this.coverageFieldId = fid;
+      this.coverageResult = resp.coverage;
+      const r = await API.getReport(this.coverageReportId);
+      this.renderReportCoverage(r);
+    } catch (e) {
+      this.coverageResult = null;
+      resEl.innerHTML = `<p class="merge-error">${this.esc(e.message)}</p>`;
+    }
   },
 
   // ---------- 接触簇分析（发布时冻结；阈值仅影响本次查询，不写回报告） ----------

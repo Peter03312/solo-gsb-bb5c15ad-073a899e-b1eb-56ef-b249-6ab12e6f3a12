@@ -41,6 +41,9 @@ const Editor = {
   tool: 'cell',
   migrate: null,       // 细胞迁移工作状态（见 resetMigration）
   mergeSelected: null, // 多视野合并统计勾选的视野 id（按 this.fields 顺序）
+  coverageFieldId: null, // 覆盖核对当前选择的视野 id
+  coverageResult: null,  // 最近一次覆盖核对结果（按本地工作副本实时计算）
+  coverageError: null,   // 最近一次覆盖核对的错误信息（如视野已被删除）
   revisions: null,     // 时间线列表（由新到旧）
   preview: null,       // 正在预览的修订快照 {rev, readVersion}；null 表示未预览
 
@@ -51,6 +54,9 @@ const Editor = {
     const data = await API.getImage(id);
     await this.applyServerData(data);
     this.mergeSelected = [];
+    this.coverageFieldId = null;
+    this.coverageResult = null;
+    this.coverageError = null;
     this.resetMigration();
     this.preview = null;
     this.loadRevisions();
@@ -1099,6 +1105,7 @@ const Editor = {
     document.getElementById('tool-hole').disabled = !this.activeCellId;
     document.getElementById('tool-fieldhole').disabled = !this.activeFieldId;
     this.renderMergePanel(c);
+    this.renderCoveragePanel(c);
     this.renderMigratePanel();
     this.renderDraftInfo();
   },
@@ -1173,6 +1180,136 @@ const Editor = {
       ${calib ? '' : '当前<b>未定标</b>：细胞数保留，面积/密度/总和显示“待定标”。'}</p>`;
   },
 
+  // ---------- 单视野细胞覆盖核对（草稿实时，与服务端同一份 Coverage 几何） ----------
+
+  selectCoverageField(id) {
+    this.coverageFieldId = id || null;
+    // 选择变化时清掉旧结果，避免展示与当前选择不符
+    this.coverageResult = null;
+    this.coverageError = null;
+    this.renderCoveragePanel(this.img.calib);
+  },
+
+  // 以本地工作副本实时计算（服务端只在 HTTP API 被外部调用时使用；页端与其共用 Coverage）
+  recomputeCoverage() {
+    this.coverageError = null;
+    const sel = document.getElementById('coverage-field');
+    const fid = sel ? sel.value : this.coverageFieldId;
+    if (!fid) {
+      this.coverageResult = null;
+      this.coverageError = null;
+      return;
+    }
+    try {
+      const resolved = window.Coverage.resolveField(this.fields, fid);
+      this.coverageFieldId = fid;
+      this.coverageResult = window.Coverage.buildFieldCoverage(
+        resolved.field, resolved.index, this.cells, this.img.calib ? this.img.calib.scale : null);
+    } catch (e) {
+      // 视野在本地被删除等：明确提示并清空结果（服务端保存后同样返回 400）
+      this.coverageResult = null;
+      this.coverageError = e.message;
+    }
+  },
+
+  // 点击“核对覆盖”：调用 HTTP API（与外部调用同一服务端实现），失败展示明确错误；
+  // 成功后结果交给 renderCoveragePanel 按当前工作副本继续实时重算。
+  async runCoverage() {
+    if (this.preview) return this.toast('正在预览历史修订（只读）：请先「退出预览」再核对');
+    const sel = document.getElementById('coverage-field');
+    const fid = sel ? sel.value : '';
+    const resEl = document.getElementById('coverage-result');
+    if (!fid) {
+      resEl.innerHTML = '<p class="hint">请先选择一个取样视野。</p>';
+      return;
+    }
+    resEl.innerHTML = '<p class="hint">计算中…</p>';
+    try {
+      await API.draftFieldCoverage(this.imageId, fid);
+      this.coverageFieldId = fid;
+      this.coverageError = null;
+      // 用与服务端同一几何实现按当前工作副本渲染（含未保存修改的实时结果）
+      this.renderCoveragePanel(this.img.calib);
+    } catch (e) {
+      this.coverageResult = null;
+      this.coverageError = e.message;
+      this.renderCoveragePanel(this.img.calib);
+    }
+  },
+
+  coverageResultTable(r, calib) {
+    // 已定标展示 mm²；未定标展示像素面积，物理面积统一“待定标”
+    const areaRow = (label, mmText, pxText) => calib
+      ? `<tr><th>${label}</th><td>${mmText} <span class="muted">mm²</span></td></tr>`
+      : `<tr><th>${label}</th><td class="muted">待定标 mm²</td><td>${pxText} px²</td></tr>`;
+    const contrib = (r.contributingCells || []);
+    const contribTxt = contrib.length
+      ? contrib.map((c) => `${this.escapeHtml(c.name) || c.key}（${calib ? `${c.intersectionAreaText} mm²` : `${c.intersectionAreaPxText || c.intersectionAreaPx} px²`}）`).join('、')
+      : '（无细胞覆盖该视野内部）';
+    return `
+      <table class="measure compact">
+        <tbody>
+          <tr><th>视野</th><td colspan="2">${this.escapeHtml(r.fieldName)}${this.fieldsDirty ? ' *' : ''}（孔洞 ${r.fieldHoles} 个）</td></tr>
+          ${areaRow('视野净面积', r.fieldAreaText, r.fieldAreaPxText)}
+          ${areaRow('细胞覆盖面积', r.coveredAreaText, r.coveredAreaPxText)}
+          ${areaRow('未覆盖面积', r.uncoveredAreaText, r.uncoveredAreaPxText)}
+          <tr><th>覆盖率</th><td colspan="2"><b>${r.coverageText}</b>
+            <span class="muted">（覆盖 ${r.coveragePercent}% / 100%）</span></td></tr>
+        </tbody>
+      </table>
+      <p class="hint">贡献细胞（按几何交集，跨边界只计内部、重叠只计一次）：${contribTxt}。
+      ${this.fieldsDirty || this.dirty ? '当前含<b>未保存</b>轮廓/视野，结果按本地工作副本实时计算；保存后与服务端一致。' : ''}
+      ${calib ? '' : '当前<b>未定标</b>：上表给出像素面积与覆盖率，物理面积显示「待定标」。'}</p>`;
+  },
+
+  renderCoveragePanel(calib) {
+    const sel = document.getElementById('coverage-field');
+    const resEl = document.getElementById('coverage-result');
+    if (!sel || !resEl) return;
+
+    // 刷新视野下拉（保留当前选择）
+    sel.innerHTML = '';
+    if (!this.fields.length) {
+      sel.innerHTML = '<option value="">— 尚无取样视野 —</option>';
+      sel.disabled = true;
+      resEl.innerHTML = '<p class="hint">尚无取样视野。圈定并保存视野后可核对覆盖。</p>';
+      return;
+    }
+    sel.disabled = false;
+    const ph = document.createElement('option');
+    ph.value = '';
+    ph.textContent = '— 选择要核对的视野 —';
+    sel.appendChild(ph);
+    this.fields.forEach((f, i) => {
+      const opt = document.createElement('option');
+      opt.value = f.id;
+      opt.textContent = `${f.name || `视野 ${i + 1}`}${this.fieldsDirty ? ' *' : ''}`;
+      sel.appendChild(opt);
+    });
+    if (this.coverageFieldId && this.fields.some((f) => f.id === this.coverageFieldId)) {
+      sel.value = this.coverageFieldId;
+    } else {
+      sel.value = '';
+      this.coverageFieldId = null;
+    }
+
+    // 若已有选择/结果，按当前工作副本实时重算（轮廓/视野/标尺改变后结果即时更新）
+    if (sel.value) {
+      this.coverageFieldId = sel.value;
+      this.recomputeCoverage();
+    }
+
+    if (this.coverageError) {
+      resEl.innerHTML = `<p class="merge-error">${this.escapeHtml(this.coverageError)}</p>`;
+      return;
+    }
+    if (!this.coverageResult) {
+      resEl.innerHTML = '<p class="hint">选择视野后点击「核对覆盖」。查询为只读，不改动草稿与修订。</p>';
+      return;
+    }
+    resEl.innerHTML = this.coverageResultTable(this.coverageResult, calib);
+  },
+
   toast(msg, ok = false) {
     const el = document.getElementById('status-toast');
     el.textContent = msg;
@@ -1217,12 +1354,15 @@ const Editor = {
     document.getElementById('publish-btn').onclick = () => this.publish();
 
     // 细胞迁移
-    document.getElementById('migrate-report').onchange = () => this.onMigrateReportChange();
-    document.getElementById('migrate-source-canvas').onclick = (e) => this.onMigrateSourceClick(e);
+    document.getElementById('migrate-report').onchange = () => this.onMigrateReportChange();    document.getElementById('migrate-source-canvas').onclick = (e) => this.onMigrateSourceClick(e);
     document.getElementById('tool-migrate').onclick = () => this.setTool('migrate');
     document.getElementById('migrate-reset').onclick = () => this.clearMigratePoints();
     document.getElementById('migrate-preview').onclick = () => this.previewMigration();
     document.getElementById('migrate-confirm').onclick = () => this.confirmMigration();
+
+    // 单视野覆盖核对
+    document.getElementById('coverage-field').onchange = (e) => this.selectCoverageField(e.target.value);
+    document.getElementById('coverage-run').onclick = () => this.runCoverage();
   }
 };
 

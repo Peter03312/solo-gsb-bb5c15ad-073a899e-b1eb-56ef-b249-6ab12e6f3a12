@@ -12,6 +12,7 @@ const geo = require('./geometry');
 const cmp = require('./compare');
 const fieldsSvc = require('./fields');
 const mergeSvc = require('./merge-stats');
+const coverageSvc = require('./coverage');
 const transfer = require('./transfer');
 const corrections = require('./corrections');
 const clustersSvc = require('./clusters');
@@ -28,9 +29,14 @@ const db = initDb(DATA_DIR);
 const app = express();
 app.use(express.json({ limit: '20mb' }));
 app.use(express.static(path.join(__dirname, '..', 'public')));
-// 合并统计模块为服务端/页端共用的同一份几何实现（UMD），直接按脚本暴露给浏览器
+// 合并统计模块为服务端/页端共用的同一份几何实现（UMD），直接按脚本暴露给浏览器；
+// coverage.js（单视野覆盖核对）同为服务端/页端共用 UMD，依赖 merge-stats 的平面排列。
 app.get('/merge-stats.js', (_req, res) => {
   res.sendFile(path.join(__dirname, 'merge-stats.js'));
+});
+// 单视野覆盖核对模块（UMD）：页端实时计算与服务端只读接口共用同一几何实现
+app.get('/coverage.js', (_req, res) => {
+  res.sendFile(path.join(__dirname, 'coverage.js'));
 });
 
 const ALLOWED_MIME = new Set(['image/png', 'image/jpeg', 'image/webp']);
@@ -459,6 +465,32 @@ app.post('/api/images/:id/field-merge', (req, res) => {
   });
 });
 
+// ---------- 单视野细胞覆盖核对（只读；按当前草稿实时计算） ----------
+//
+// 请求体：{ fieldId: string }。按当前细胞轮廓、视野与标尺实时计算该视野的
+// 净面积、细胞覆盖面积（细胞净区域并集与视野净区域的几何交集）、未覆盖面积与覆盖率。
+// 只读：不修改草稿、不追加修订；未定标草稿仍返回像素面积与覆盖率，物理面积为“待定标”。
+app.post('/api/images/:id/field-coverage', (req, res) => {
+  const img = getImageOr404(req.params.id);
+  if (!img) return res.status(404).json({ error: '图片不存在' });
+  const body = req.body || {};
+  let resolved;
+  try {
+    resolved = coverageSvc.resolveField(img.fields, body.fieldId);
+  } catch (e) {
+    return badRequest(res, e.message);
+  }
+  const coverage = coverageSvc.buildFieldCoverage(
+    resolved.field, resolved.index, img.cells, img.calib ? img.calib.scale : null);
+  res.json({
+    scope: 'draft',
+    imageId: img.id,
+    version: img.version,
+    calibrated: !!img.calib,
+    coverage
+  });
+});
+
 // ---------- 草稿修订时间线（只追加）与恢复 ----------
 //
 // 每次成功写入（定标/轮廓/视野/迁移/恢复）都已在同一事务留下完整快照修订；
@@ -724,6 +756,32 @@ app.post('/api/reports/:id/field-merge', (req, res) => {
     draftVersion: report.draftVersion,
     calibrated: !!report.calib,
     stats
+  });
+});
+
+// ---------- 报告内单视野细胞覆盖核对（只读；只使用发布时冻结数据） ----------
+//
+// 请求体：{ fieldId: string }。标识必须来自该报告发布时冻结的 fields；
+// 只读取发布时冻结的 cells/fields/calib，草稿后续修改或报告更正都不改变旧报告结果。
+app.post('/api/reports/:id/field-coverage', (req, res) => {
+  const report = getReportOr404(req.params.id);
+  if (!report) return res.status(404).json({ error: '报告不存在' });
+  const body = req.body || {};
+  let resolved;
+  try {
+    resolved = coverageSvc.resolveField(report.fields, body.fieldId);
+  } catch (e) {
+    return badRequest(res, e.message);
+  }
+  const coverage = coverageSvc.buildFieldCoverage(
+    resolved.field, resolved.index, report.cells, report.calib ? report.calib.scale : null);
+  res.json({
+    scope: 'report',
+    reportId: report.id,
+    title: report.title,
+    draftVersion: report.draftVersion,
+    calibrated: !!report.calib,
+    coverage
   });
 });
 

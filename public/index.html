@@ -106,8 +106,21 @@
         </div>
 
         <div class="panel">
-          <h3>⑦ 细胞迁移（从已发布报告）</h3>
-          <p class="hint">把一份<b>已发布报告</b>的全部细胞按仿射变换迁移到当前草稿：
+          <h3>⑦ 视野细胞覆盖核对（几何交集）</h3>
+          <p class="hint">输入或选择<b>一个取样视野标识</b>，按<b>细胞净区域（外环扣除孔洞）的几何并集</b>
+            与该<b>视野净区域的几何交集</b>核对：给出视野净面积、细胞覆盖面积、未覆盖面积与覆盖率。
+            跨视野边界的细胞<b>只计内部部分</b>，多个细胞重叠<b>只计一次</b>，孔洞不贡献面积，
+            仅边界接触不贡献；<b>不沿用按质心计数的密度规则</b>。按当前轮廓/视野/标尺实时计算，
+            未定标时仍显示<b>像素面积与覆盖率</b>，物理面积显示「待定标」。查询为只读，不改动草稿与修订。</p>
+          <div class="toolbar wrap">
+            <select id="coverage-field" class="migrate-select"></select>
+            <button id="coverage-run" class="primary small">核对覆盖</button>
+          </div>
+          <div id="coverage-result"></div>
+        </div>
+
+        <div class="panel">
+          <h3>⑧ 细胞迁移（从已发布报告）</h3>          <p class="hint">把一份<b>已发布报告</b>的全部细胞按仿射变换迁移到当前草稿：
             选择来源报告后，在来源快照与右侧大图上按<b>相同顺序</b>各标记 3 个<b>不共线</b>对应点，
             预览逐个校验全部通过后才能确认迁移。迁移只把细胞<b>追加</b>到当前草稿
             （保留名称、按当前标尺重算测量与视野统计），来源报告与已发布内容不受影响。</p>
@@ -131,7 +144,7 @@
         </div>
 
         <div class="panel">
-          <h3>⑧ 草稿修订时间线</h3>
+          <h3>⑨ 草稿修订时间线</h3>
           <p class="hint">每次<b>成功</b>的标尺定标、轮廓保存、视野保存与细胞迁移都会留下一条
             <b>完整一致的修订</b>（失败请求不留记录）。点 <b>预览</b> 可只读查看该修订的
             <b>标尺、细胞轮廓与取样视野</b>（画布上叠加显示，不影响未保存绘制）；点 <b>恢复</b>
@@ -143,7 +156,7 @@
         </div>
 
         <div class="panel">
-          <h3>⑨ 发布报告</h3>
+          <h3>⑩ 发布报告</h3>
           <p class="hint">发布会冻结当时的图片、标尺、细胞轮廓、<b>取样视野与密度统计</b>；之后修改草稿不影响已发布报告。</p>
           <button id="publish-btn" class="primary wide">发布当前草稿为报告</button>
         </div>
@@ -263,6 +276,18 @@
           <div id="rp-merge-result" class="merge-result"></div>
         </div>
         <div class="panel">
+          <h3>视野细胞覆盖核对（发布时冻结）</h3>
+          <p class="hint">选择或输入<b>一个本报告内的视野标识</b>，按<b>细胞净区域并集与视野净区域的几何交集</b>
+            核对覆盖：视野净面积、细胞覆盖面积、未覆盖面积与覆盖率。跨边界细胞只计内部、重叠只计一次、
+            孔洞与仅边界接触不贡献，不使用质心计数规则。结果只读取<b>发布时冻结数据</b>，
+            草稿后续修改或报告更正都不改变旧报告；查询只读，不写回报告。</p>
+          <div class="toolbar wrap">
+            <select id="rp-coverage-field" class="migrate-select"></select>
+            <button id="rp-coverage-run" class="primary small">核对覆盖</button>
+          </div>
+          <div id="rp-coverage-result"></div>
+        </div>
+        <div class="panel">
           <h3>接触簇分析（间距阈值）</h3>
           <p class="hint">输入<b>间距阈值（微米，允许 0）</b>，按发布时<b>冻结的轮廓与定标</b>计算：
             距离取两个细胞<b>外轮廓扣除孔洞后的净区域</b>最短间距——区域重叠或边界接触时为 0；
@@ -294,6 +319,7 @@
 
   <script src="/geometry-client.js"></script>
   <script src="/merge-stats.js"></script>
+  <script src="/coverage.js"></script>
   <script src="/api.js"></script>
   <script src="/canvas-view.js"></script>
   <script src="/editor.js"></script>
